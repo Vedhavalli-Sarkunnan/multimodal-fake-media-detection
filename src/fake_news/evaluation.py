@@ -1,8 +1,9 @@
 import json
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 import os
+import numpy as np
 
-def store_results(result_dict, json_path="results.json"):
+def store_results(result_dict, json_path="results/fake_news_results.json"):
     if os.path.exists(json_path):
         with open(json_path, "r") as f:
             existing_results = json.load(f)
@@ -16,7 +17,8 @@ def store_results(result_dict, json_path="results.json"):
 
     print(f"Results stored in {json_path}")
 
-def evaluate_model(model, x_test, y_test, experiment_name, json_path="results.json"):
+#Used only for classical ML models 
+def evaluate_model(model, x_test, y_test, experiment_name, json_path="results/fake_news_results.json"):
 
     test_preds = model.predict(x_test)
     test_acc = accuracy_score(y_test, test_preds)
@@ -36,7 +38,7 @@ def evaluate_model(model, x_test, y_test, experiment_name, json_path="results.js
     print(f"Test accuracy: {test_acc}")
     print(f"Test F1 score: {test_f1}")
     print(f"Confusion Matrix:\n {test_cm}")
-    print(f"Classification Report:\n {test_cr}")
+    print(f"Classification Report:\n {classification_report(y_test, test_preds)}")
 
 def normalize_weights(weights):
     for model in weights:
@@ -52,6 +54,114 @@ def get_score(model, x):
         return 1 / (1 + np.exp(-model.decision_function(x)[0]))
     else:
         return float(model.predict(x)[0])
+
+import torch
+import numpy as np
+
+def get_dl_score(model, x_title=None, x_body=None, mode="fusion"):
+
+    model.eval()
+    device = next(model.parameters()).device
+
+    with torch.no_grad():
+        if mode == "fusion":
+            logits = model(
+                torch.tensor(x_title, dtype=torch.float32).to(device),
+                torch.tensor(x_body, dtype=torch.float32).to(device)
+            )
+        elif mode == "title_only":
+            logits = model(
+                title_emb=torch.tensor(x_title, dtype=torch.float32).to(device)
+            )
+
+        else:  # body_only
+            logits = model(
+                body_emb=torch.tensor(x_body, dtype=torch.float32).to(device)
+            )
+        probs = torch.softmax(logits, dim=1)
+        return probs[:,1].item()
+
+def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, threshold=0.5):
+    preds = []
+    weights = normalize_weights(weights)
+
+    for i in range(len(x_test)):
+        x = x_test[i].reshape(1, -1)
+        has_title, has_body = availability_mask[i]
+        embedding_dim = x.shape[1]
+
+        votes = []
+        vote_weights = []
+
+        if has_title and has_body and embedding_dim == TITLE_DIM + BODY_DIM:
+            score = get_dl_score(
+                model=models[model_name]["full"],
+                x_title=x[:, :TITLE_DIM],
+                x_body=x[:, TITLE_DIM:],
+                mode="fusion"
+            )
+            votes.append(score)
+            vote_weights.append(weights[model_name]["full"])
+
+        if has_title:
+            if embedding_dim == TITLE_DIM:
+                x_title = x
+            elif embedding_dim == TITLE_DIM + BODY_DIM:
+                x_title = x[:, :TITLE_DIM]
+            else:
+                x_title = None
+
+            if x_title is not None:
+                score = get_dl_score(
+                    model=models[model_name]["title"],
+                    x_title=x_title,
+                    mode="title_only"
+                )
+                votes.append(score)
+                vote_weights.append(weights[model_name]["title"])
+                
+        if has_body:
+            if embedding_dim == BODY_DIM:
+                x_body = x
+            elif embedding_dim == TITLE_DIM + BODY_DIM:
+                x_body = x[:, TITLE_DIM:]
+            else:
+                x_body = None
+
+            if x_body is not None:
+                score = get_dl_score(
+                    model=models[model_name]["body"],
+                    x_body=x_body,
+                    mode="body_only"
+                )
+                votes.append(score)
+                vote_weights.append(weights[model_name]["body"])
+
+        final_score = np.average(votes, weights=vote_weights)
+        final_pred = int(final_score >= threshold)
+        preds.append(final_pred)
+
+    preds = np.array(preds)
+    test_acc = accuracy_score(y_test, preds)
+    test_f1  = f1_score(y_test, preds)
+    test_cm  = confusion_matrix(y_test, preds)
+    test_cr  = classification_report(y_test, preds, output_dict=True)
+
+    print(f"Accuracy for {model_name} (DL ensemble): {test_acc}")
+    print(f"F1 score for {model_name} (DL ensemble): {test_f1}")
+    print(f"Confusion Matrix:\n{test_cm}")
+    print(f"Classification Report:\n{classification_report(y_test, preds)}")
+
+    results = {
+        model_name + "_dl_weighted_ensemble": {
+            "accuracy": test_acc,
+            "f1_score": test_f1,
+            "confusion_matrix": test_cm.tolist(),
+            "classification_report": test_cr
+        }
+    }
+
+    store_results(results, "results/fake_news_results.json")
 
 def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM):
     preds = []
@@ -120,4 +230,153 @@ def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weigh
           "classification_report": test_cr
         }
     }
-    store_results(results, "results.json")
+    store_results(results, "results/fake_news_results.json")
+    
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+
+def find_best_threshold(probs, labels):
+    
+    thresholds = np.linspace(0.1, 0.9, 81)
+    
+    best_f1 = 0
+    best_threshold = 0.5
+
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        f1 = f1_score(labels, preds, average="macro")
+
+        if f1 > best_f1:
+            best_f1 = f1
+            best_threshold = t
+    print("Using macro f1 score for threshold")
+    return best_threshold, best_f1
+
+def evaluate_dl_model(
+    model,
+    x_title_test,
+    x_body_test,
+    y_test,
+    experiment_name,
+    mode="fusion",
+    batch_size=64,
+    json_path="results/fake_news_results.json",
+    threshold=None,
+    return_probs=False,
+    is_test=True
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    y_test_t = torch.tensor(y_test, dtype=torch.long)
+
+    if mode == "fusion":
+        x_title_t = torch.tensor(x_title_test, dtype=torch.float32)
+        x_body_t = torch.tensor(x_body_test, dtype=torch.float32)
+        dataset = TensorDataset(x_title_t, x_body_t, y_test_t)
+
+    elif mode == "title_only":
+        x_title_t = torch.tensor(x_title_test, dtype=torch.float32)
+        dataset = TensorDataset(x_title_t, y_test_t)
+
+    else: #body_only
+        x_body_t = torch.tensor(x_body_test, dtype=torch.float32)
+        dataset = TensorDataset(x_body_t, y_test_t)
+
+    loader = DataLoader(dataset, batch_size=batch_size)
+
+    all_preds = []
+    all_labels = []
+    if return_probs:
+        all_probs = []
+
+    with torch.no_grad():
+        for batch in loader:
+
+            if mode == "fusion":
+                x_title, x_body, y = batch
+                logits = model(x_title.to(device),x_body.to(device))
+
+            elif mode == "title_only":
+                x_title, y = batch
+                logits = model(title_emb=x_title.to(device))
+
+            else: #body_only
+                x_body, y = batch
+                logits = model(body_emb=x_body.to(device))
+
+            probs = torch.softmax(logits, dim=1)[:,1].cpu().numpy()
+            
+            if threshold is None:
+                preds = np.argmax(logits.cpu().numpy(), axis=1)
+            else:
+                preds = (probs >= threshold).astype(int)
+
+            if return_probs:
+                all_probs.extend(probs)
+            all_preds.extend(preds)
+            all_labels.extend(y.numpy())
+
+        test_acc = accuracy_score(all_labels, all_preds)
+        test_f1  = f1_score(all_labels, all_preds)
+        test_cm  = confusion_matrix(all_labels, all_preds)
+        test_cr  = classification_report(all_labels, all_preds, output_dict=True)
+
+        if is_test:
+            experiment_results = {
+                experiment_name: {
+                    "accuracy": test_acc,
+                    "f1_score": test_f1,
+                    "confusion_matrix": test_cm.tolist(),
+                    "classification_report": test_cr
+                }
+            }
+            store_results(experiment_results, json_path)
+        
+            print(f"Test accuracy: {test_acc}")
+            print(f"Test F1 score: {test_f1}")
+            print(f"Confusion Matrix:\n{test_cm}")
+            print(f"Classification Report:\n{classification_report(all_labels, all_preds)}")
+        if return_probs:
+            return np.array(all_probs), np.array(all_labels)
+
+def tune_threshold_and_eval(
+    model,
+    x_title_val,
+    x_body_val,
+    y_val,
+    x_title_test,
+    x_body_test,
+    y_test,
+    mode,
+    experiment_prefix,
+    threshold_dict,
+    model_name
+):
+    if thresholds_dict[model_name][mode] is not None:
+        threshold = threshold_dict[model_name][mode]
+    else:
+        val_probs, val_labels = evaluate_dl_model(
+            model=model,
+            x_title_test=x_title_val,
+            x_body_test=x_body_val,
+            y_test=y_val,
+            experiment_name=f"{experiment_prefix}_val",
+            mode=mode,
+            return_probs=True,
+            is_test=False
+        )
+    
+        thresholds_dict[model_name][mode], _ = find_best_threshold(val_probs, val_labels)
+
+    evaluate_dl_model(
+        model=model,
+        x_title_test=x_title_test,
+        x_body_test=x_body_test,
+        y_test=y_test,
+        experiment_name=f"{experiment_prefix}_test",
+        mode=mode,
+        threshold=thresholds_dict[model_name][mode],
+        is_test=True
+    )

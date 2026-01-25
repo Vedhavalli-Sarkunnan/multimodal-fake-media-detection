@@ -1,24 +1,29 @@
 from sklearn.model_selection import train_test_split
+import numpy as np
 
-def split_data(x, y, test_size=0.15, val_size=0.15, random_state=16):
+def split_data_indices(y, test_size=0.15, val_size=0.15, random_state=16):
 
-  x_temp, x_test, y_temp, y_test = train_test_split(
-      x, y,
-      test_size=test_size,
-      stratify=y,
-      random_state=random_state
-  )
+    indices = np.arange(len(y))
 
-  val_ratio_adjusted = val_size / (1 - test_size)
+    idx_temp, idx_test, y_temp, y_test = train_test_split(
+        indices,
+        y,
+        test_size=test_size,
+        stratify=y,
+        random_state=random_state
+    )
 
-  x_train, x_val, y_train, y_val = train_test_split(
-      x_temp, y_temp,
-      test_size=val_ratio_adjusted,
-      stratify=y_temp,
-      random_state=random_state
-  )
+    val_ratio_adjusted = val_size / (1 - test_size)
 
-  return x_train, x_val, x_test, y_train, y_val, y_test
+    idx_train, idx_val, _, _ = train_test_split(
+        idx_temp,
+        y_temp,
+        test_size=val_ratio_adjusted,
+        stratify=y_temp,
+        random_state=random_state
+    )
+
+    return idx_train, idx_val, idx_test
 
 # Preparing mixed dataset for testing 
 
