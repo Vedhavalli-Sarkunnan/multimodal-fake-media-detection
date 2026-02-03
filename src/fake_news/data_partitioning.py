@@ -1,5 +1,6 @@
 from sklearn.model_selection import train_test_split
 import numpy as np
+import pandas as pd
 
 def split_data_indices(y, test_size=0.15, val_size=0.15, random_state=16):
 
@@ -135,3 +136,88 @@ def weighted_early_fusion(
         "title_scaler": title_scaler,
         "body_scaler": body_scaler
     }
+
+def weighted_early_fusion_split(
+    x_wf_title_train,
+    x_wf_body_train,
+    x_wf_title_val,
+    x_wf_body_val,
+    x_wf_title_test,
+    x_wf_body_test,
+    y_full_train,
+    y_full_val,
+    y_full_test,
+    TITLE_WEIGHT=1.0,
+    BODY_WEIGHT=1.15
+):
+    title_scaler = StandardScaler()
+    body_scaler  = StandardScaler()
+
+    x_wf_title_train_scaled = title_scaler.fit_transform(x_wf_title_train)
+    x_wf_body_train_scaled  = body_scaler.fit_transform(x_wf_body_train)
+
+    x_wf_title_val_scaled   = title_scaler.transform(x_wf_title_val)
+    x_wf_body_val_scaled    = body_scaler.transform(x_wf_body_val)
+
+    x_wf_title_test_scaled  = title_scaler.transform(x_wf_title_test)
+    x_wf_body_test_scaled   = body_scaler.transform(x_wf_body_test)
+
+    x_wf_train = np.concatenate(
+        [TITLE_WEIGHT * x_wf_title_train_scaled,
+         BODY_WEIGHT  * x_wf_body_train_scaled],
+        axis=1
+    )
+
+    x_wf_val = np.concatenate(
+        [TITLE_WEIGHT * x_wf_title_val_scaled,
+         BODY_WEIGHT  * x_wf_body_val_scaled],
+        axis=1
+    )
+
+    x_wf_test = np.concatenate(
+        [TITLE_WEIGHT * x_wf_title_test_scaled,
+         BODY_WEIGHT  * x_wf_body_test_scaled],
+        axis=1
+    )
+
+    return {
+        "x_wf_train": x_wf_train,
+        "x_wf_val": x_wf_val,
+        "x_wf_test": x_wf_test,
+        "y_wf_train": y_full_train,
+        "y_wf_val": y_full_val,
+        "y_wf_test": y_full_test,
+        "title_scaler": title_scaler,
+        "body_scaler": body_scaler
+    }
+
+def rename_col(df, text_col):
+    tmp = df[[text_col, "label"]].copy()
+    tmp = tmp.rename(columns={text_col: "text"})
+    return tmp
+
+def prepare_fine_tuning_dataset(full_df=None, title_only_df=None, body_only_df=None):
+    dfs = []
+    # Full dataset → title + body
+    if full_df is not None:
+        dfs.append(rename_col(full_df, "title"))
+        dfs.append(rename_col(full_df, "body"))
+
+    # Title-only dataset
+    if title_only_df is not None:
+        dfs.append(rename_col(title_only_df, "title"))
+
+    # Body-only dataset
+    if body_only_df is not None:
+        dfs.append(rename_col(body_only_df, "body"))
+
+    # Combine
+    combined_df = pd.concat(dfs, ignore_index=True)
+        
+    # Drop exact duplicates
+    combined_df = combined_df.drop_duplicates(
+        subset=["text", "label"],
+        keep="first"
+    ).reset_index(drop=True)
+    
+    return combined_df

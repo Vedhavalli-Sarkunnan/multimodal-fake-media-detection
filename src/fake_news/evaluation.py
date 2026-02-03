@@ -3,22 +3,29 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classifi
 import os
 import numpy as np
 
-def store_results(result_dict, json_path="results/fake_news_results.json"):
+def store_results(model_name, experiment_type, metrics_dict, json_path="results/fake_news_results.json"):
+    # Load existing results
     if os.path.exists(json_path):
         with open(json_path, "r") as f:
-            existing_results = json.load(f)
+            results = json.load(f)
     else:
-        existing_results = {}
+        results = {}
 
-    existing_results.update(result_dict)
+    # Ensure model key exists
+    if model_name not in results:
+        results[model_name] = {}
 
+    # Store experiment
+    results[model_name][experiment_type] = metrics_dict
+
+    # Write back
     with open(json_path, "w") as f:
-        json.dump(existing_results, f, indent=4)
+        json.dump(results, f, indent=4)
 
-    print(f"Results stored in {json_path}")
+    print(f"Stored results → Model: {model_name}, Experiment: {experiment_type}")
 
 #Used only for classical ML models 
-def evaluate_model(model, x_test, y_test, experiment_name, json_path="results/fake_news_results.json"):
+def evaluate_model(model, x_test, y_test, model_name, experiment_name, json_path="results/fake_news_results.json"):
 
     test_preds = model.predict(x_test)
     test_acc = accuracy_score(y_test, test_preds)
@@ -27,14 +34,12 @@ def evaluate_model(model, x_test, y_test, experiment_name, json_path="results/fa
     test_cr = classification_report(y_test, test_preds, output_dict=True)
 
     experiment_results = {
-        experiment_name: {
-            "accuracy": test_acc,
-            "f1_score": test_f1,
-            "confusion_matrix": test_cm.tolist(),
-            "classification_report": test_cr
-        }
+        "accuracy": test_acc,
+        "f1_score": test_f1,
+        "confusion_matrix": test_cm.tolist(),
+        "classification_report": test_cr
     }
-    store_results(experiment_results, json_path)
+    store_results(model_name, experiment_name, experiment_results, json_path)
     print(f"Test accuracy: {test_acc}")
     print(f"Test F1 score: {test_f1}")
     print(f"Confusion Matrix:\n {test_cm}")
@@ -81,7 +86,7 @@ def get_dl_score(model, x_title=None, x_body=None, mode="fusion"):
         probs = torch.softmax(logits, dim=1)
         return probs[:,1].item()
 
-def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, threshold=0.5):
+def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, json_path, threshold=0.5):
     preds = []
     weights = normalize_weights(weights)
 
@@ -152,18 +157,22 @@ def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, we
     print(f"Confusion Matrix:\n{test_cm}")
     print(f"Classification Report:\n{classification_report(y_test, preds)}")
 
-    results = {
-        model_name + "_dl_weighted_ensemble": {
-            "accuracy": test_acc,
-            "f1_score": test_f1,
-            "confusion_matrix": test_cm.tolist(),
-            "classification_report": test_cr
-        }
+    experiment_results = {
+    "accuracy": test_acc,
+    "f1_score": test_f1,
+    "confusion_matrix": test_cm.tolist(),
+    "classification_report": test_cr
     }
+    
+    store_results(
+        model_name=model_name,
+        experiment_type="DL_weighted_ensemble",
+        metrics_dict=experiment_results,
+        json_path=json_path
+    )
 
-    store_results(results, "results/fake_news_results.json")
 
-def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM):
+def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, json_path):
     preds = []
     weights = normalize_weights(weights)
     for i in range(len(x_test)):
@@ -221,23 +230,27 @@ def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weigh
     print(f"Confusion Matrix for {model_name}:\n{test_cm}")
     print(f"Classification Report for {model_name}:\n{classification_report(y_test, preds)}")
 
-    experiment_name = model_name + "_mixed_embeddings_weighted_ensemble"
-    results = {
-        experiment_name: {
-          "accuracy": test_acc,
-          "f1_score": test_f1,
-          "confusion_matrix": test_cm.tolist(),
-          "classification_report": test_cr
-        }
+    experiment_results = {
+    "accuracy": test_acc,
+    "f1_score": test_f1,
+    "confusion_matrix": test_cm.tolist(),
+    "classification_report": test_cr
     }
-    store_results(results, "results/fake_news_results.json")
+    
+    store_results(
+        model_name=model_name,
+        experiment_type="ML_weighted_ensemble",
+        metrics_dict=experiment_results,
+        json_path=json_path
+    )
+
     
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 def find_best_threshold(probs, labels):
     
-    thresholds = np.linspace(0.1, 0.9, 81)
+    thresholds = np.linspace(0.1, 0.9, 81) #step value of 0.01 => [0.10, 0.11, 0.12, ...., 0.90] => 81 values
     
     best_f1 = 0
     best_threshold = 0.5
@@ -257,7 +270,7 @@ def evaluate_dl_model(
     x_title_test,
     x_body_test,
     y_test,
-    experiment_name,
+    model_name,
     mode="fusion",
     batch_size=64,
     json_path="results/fake_news_results.json",
@@ -325,15 +338,19 @@ def evaluate_dl_model(
 
         if is_test:
             experiment_results = {
-                experiment_name: {
-                    "accuracy": test_acc,
-                    "f1_score": test_f1,
-                    "confusion_matrix": test_cm.tolist(),
-                    "classification_report": test_cr
-                }
+                "accuracy": test_acc,
+                "f1_score": test_f1,
+                "confusion_matrix": test_cm.tolist(),
+                "classification_report": test_cr
             }
-            store_results(experiment_results, json_path)
-        
+            
+            store_results(
+                model_name=model_name,
+                experiment_type=mode,
+                metrics_dict=experiment_results,
+                json_path=json_path
+            )
+    
             print(f"Test accuracy: {test_acc}")
             print(f"Test F1 score: {test_f1}")
             print(f"Confusion Matrix:\n{test_cm}")
@@ -350,11 +367,11 @@ def tune_threshold_and_eval(
     x_body_test,
     y_test,
     mode,
-    experiment_prefix,
     threshold_dict,
-    model_name
+    model_name,
+    json_path
 ):
-    if thresholds_dict[model_name][mode] is not None:
+    if threshold_dict[model_name][mode] is not None:
         threshold = threshold_dict[model_name][mode]
     else:
         val_probs, val_labels = evaluate_dl_model(
@@ -362,21 +379,22 @@ def tune_threshold_and_eval(
             x_title_test=x_title_val,
             x_body_test=x_body_val,
             y_test=y_val,
-            experiment_name=f"{experiment_prefix}_val",
+            model_name=model_name,
             mode=mode,
             return_probs=True,
             is_test=False
         )
     
-        thresholds_dict[model_name][mode], _ = find_best_threshold(val_probs, val_labels)
+        threshold_dict[model_name][mode], _ = find_best_threshold(val_probs, val_labels)
 
     evaluate_dl_model(
         model=model,
         x_title_test=x_title_test,
         x_body_test=x_body_test,
         y_test=y_test,
-        experiment_name=f"{experiment_prefix}_test",
+        model_name=model_name,
         mode=mode,
-        threshold=thresholds_dict[model_name][mode],
-        is_test=True
+        threshold=threshold_dict[model_name][mode],
+        is_test=True,
+        json_path=json_path
     )

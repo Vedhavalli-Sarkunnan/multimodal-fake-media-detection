@@ -12,7 +12,7 @@ class GatedFusionClassifier(nn.Module):
         self.mode = mode
         self.title_encoder = nn.Sequential(
             nn.Linear(title_dim, hidden_dim),
-            nn.ReLU(),
+            nn.ReLU(), # ReLU = max(0, x)
             nn.Dropout(0.3)
         )
         
