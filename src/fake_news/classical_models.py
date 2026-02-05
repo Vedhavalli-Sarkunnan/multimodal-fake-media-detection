@@ -4,13 +4,14 @@ from sklearn.svm import LinearSVC
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 
-def train_logistic_regression(x_train, y_train, x_val, y_val, C=1.0):
+def train_logistic_regression(x_train, y_train, x_val, y_val, C=0.5):
 
     model = LogisticRegression(
+        class_weight="balanced",
         max_iter=1000,
         C=C,
-        class_weight="balanced",
-        n_jobs=-1
+        penalty="l2",
+        solver="liblinear"
     )
     model.fit(x_train, y_train)
     val_preds = model.predict(x_val)
@@ -54,7 +55,7 @@ def train_xgboost(x_train, y_train, x_val, y_val, max_depth=3, n_estimators=50, 
     
     return model, val_f1
 
-def train_LinearSVC(x_train, y_train, x_val, y_val, C=1.0, random_state=16):
+def train_LinearSVC(x_train, y_train, x_val, y_val, C=0.7, random_state=16):
 
     model = LinearSVC(
         C=C,

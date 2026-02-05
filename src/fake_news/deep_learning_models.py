@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 
@@ -53,6 +53,23 @@ class GatedFusionClassifier(nn.Module):
 
         logits = self.classifier(h)
         return logits
+
+class WeightedFocalLoss(nn.Module):
+    def __init__(self, class_weights=None, gamma=2):
+        super().__init__()
+        self.gamma = gamma
+        self.class_weights = class_weights
+        self.ce = nn.CrossEntropyLoss(
+            weight=class_weights,
+            reduction="none"
+        )
+
+    def forward(self, logits, targets):
+        ce_loss = self.ce(logits, targets)     # per-sample loss
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+
 
 from copy import deepcopy
 
@@ -113,12 +130,15 @@ def train_gated_fusion_model(
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    if mode == "body_only":
-        class_weights = torch.tensor([1.0, 1.2]).to(device)
-    else:
-        class_weights = torch.tensor([1.0, 1.3]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-
+    
+    class_weights = compute_class_weight(
+        class_weight="balanced",
+        classes=np.unique(y_train),
+        y=y_train
+    )
+    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
+    criterion = WeightedFocalLoss(class_weights=class_weights, gamma=2)
+  
     best_f1 = 0
     best_model = None
     patience = 5
@@ -163,7 +183,7 @@ def train_gated_fusion_model(
                     logits = model(body_emb=x_body.to(device))
     
                 probs = torch.softmax(logits, dim=1)[:, 1]   # P(fake)
-                preds = (probs >= 0.5).cpu().numpy().astype(int)
+                preds = torch.argmax(logits, dim=1).cpu().numpy()
 
                 all_preds.extend(preds)
                 all_labels.extend(y.cpu().numpy())

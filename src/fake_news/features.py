@@ -23,7 +23,7 @@ def roberta_vectorize(text_series, device, tokenizer, model, batch_size=16, max_
 
         with torch.no_grad():
             output = model(**encoded)
-            
+    
             # output.last_hidden_state shape:
             # (batch_size, sequence_length, hidden_size)
             # hidden_size = 768
@@ -36,6 +36,10 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from sklearn.metrics import f1_score
+
+def mean_pooling(last_hidden_state, attention_mask):
+    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+    return (last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
 
 class FakeNewsDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=128):
@@ -111,7 +115,17 @@ def fine_tune_roberta(
 
     base_roberta = RobertaModel.from_pretrained("roberta-base").to(device)
     model = RobertaFeatureTuner(base_roberta).to(device)
-    optimizer = AdamW(model.parameters(), lr=lr)
+
+    for name, param in model.roberta.named_parameters():
+        if "encoder.layer." in name:
+            layer_num = int(name.split(".")[2])
+            if layer_num < 8:
+                param.requires_grad = False
+                
+    optimizer = AdamW([
+        {"params": model.roberta.parameters(), "lr": 1e-5},
+        {"params": model.classifier.parameters(), "lr": 5e-4}
+    ])
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(epochs):
@@ -126,6 +140,7 @@ def fine_tune_roberta(
             logits, _ = model(input_ids, attention_mask)
             loss = criterion(logits, labels)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
         model.eval()
@@ -153,7 +168,7 @@ def fine_tune_roberta(
     print("Fine-tuning completed")
     return model, tokenizer
 
-def extract_embeddings(texts, labels, model, tokenizer, batch_size=32, max_len=256):
+def extract_embeddings(texts, labels, model, tokenizer, batch_size=32, max_len=256, use_mean_pooling=False):
     
     device = next(model.parameters()).device
     model.eval()
@@ -169,9 +184,17 @@ def extract_embeddings(texts, labels, model, tokenizer, batch_size=32, max_len=2
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
-            _, cls_emb = model(input_ids, attention_mask)
+            outputs = model.roberta(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
 
-            embeddings.append(cls_emb.cpu())
+            if use_mean_pooling:
+                pooled = mean_pooling(outputs.last_hidden_state, attention_mask)
+            else:
+                pooled = outputs.last_hidden_state[:,0,:]  # CLS
+            
+            embeddings.append(pooled.cpu())
             true_labels.extend(batch["label"].cpu().numpy())
             
     embeddings = torch.cat(embeddings, dim=0).numpy()

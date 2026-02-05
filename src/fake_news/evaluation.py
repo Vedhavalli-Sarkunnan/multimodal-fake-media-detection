@@ -24,27 +24,110 @@ def store_results(model_name, experiment_type, metrics_dict, json_path="results/
 
     print(f"Stored results → Model: {model_name}, Experiment: {experiment_type}")
 
+def get_model_probs(model, X):
+
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)[:, 1]
+
+    elif hasattr(model, "decision_function"):
+        scores = model.decision_function(X)
+        return 1 / (1 + np.exp(-scores))  # sigmoid
+
+    else:
+        raise ValueError("Model does not support probability output")
+
 #Used only for classical ML models 
-def evaluate_model(model, x_test, y_test, model_name, experiment_name, json_path="results/fake_news_results.json"):
+def evaluate_model(
+    model,
+    x_test,
+    y_test,
+    model_name,
+    experiment_name,
+    threshold,
+    json_path="results/fake_news_results.json",
+    is_test=True,
+    return_probs=False
+):
+    probs = get_model_probs(model, x_test)
+    preds = (probs >= threshold).astype(int)
 
-    test_preds = model.predict(x_test)
-    test_acc = accuracy_score(y_test, test_preds)
-    test_f1 = f1_score(y_test, test_preds)
-    test_cm = confusion_matrix(y_test, test_preds)
-    test_cr = classification_report(y_test, test_preds, output_dict=True)
+    acc = accuracy_score(y_test, preds)
+    f1  = f1_score(y_test, preds)
+    cm  = confusion_matrix(y_test, preds)
+    cr  = classification_report(y_test, preds, output_dict=True)
 
-    experiment_results = {
-        "accuracy": test_acc,
-        "f1_score": test_f1,
-        "confusion_matrix": test_cm.tolist(),
-        "classification_report": test_cr
-    }
-    store_results(model_name, experiment_name, experiment_results, json_path)
-    print(f"Test accuracy: {test_acc}")
-    print(f"Test F1 score: {test_f1}")
-    print(f"Confusion Matrix:\n {test_cm}")
-    print(f"Classification Report:\n {classification_report(y_test, test_preds)}")
+    if is_test:
+        experiment_results = {
+            "accuracy": acc,
+            "f1_score": f1,
+            "confusion_matrix": cm.tolist(),
+            "classification_report": cr
+        }
 
+        store_results(
+            model_name=model_name,
+            experiment_type=experiment_name,
+            metrics_dict=experiment_results,
+            json_path=json_path
+        )
+
+        print(f"Test Accuracy: {acc:.4f}")
+        print(f"Test F1 Score: {f1:.4f}")
+        print(f"Confusion Matrix:\n{cm}")
+        print(classification_report(y_test, preds))
+
+    if return_probs:
+        return probs, np.array(y_test)
+
+def tune_threshold_and_eval_classical(
+    model,
+    x_val,
+    y_val,
+    x_test,
+    y_test,
+    model_name,
+    experiment_name,
+    threshold_dict,
+    json_path="results/fake_news_results.json"
+):
+    # Initialize nested dict if needed
+    if model_name not in threshold_dict:
+        threshold_dict[model_name] = {}
+
+    # Use stored threshold if exists
+    if experiment_name in threshold_dict[model_name]:
+        threshold = threshold_dict[model_name][experiment_name]
+        print(f"Using stored threshold: {threshold:.2f}")
+
+    else:
+        val_probs, val_labels = evaluate_model(
+            model=model,
+            x_test=x_val,
+            y_test=y_val,
+            model_name=model_name,
+            experiment_name=experiment_name,
+            threshold=0.5,
+            is_test=False,
+            return_probs=True
+        )
+
+        threshold, best_f1 = find_best_threshold(val_probs, val_labels)
+        threshold_dict[model_name][experiment_name] = threshold
+
+        print(f"Best threshold found: {threshold:.2f} | Val Macro F1: {best_f1:.4f}")
+
+    # Final evaluation on TEST
+    evaluate_model(
+        model=model,
+        x_test=x_test,
+        y_test=y_test,
+        model_name=model_name,
+        experiment_name=experiment_name,
+        threshold=threshold,
+        json_path=json_path,
+        is_test=True
+    )
+        
 def normalize_weights(weights):
     for model in weights:
         total = sum(weights[model].values()) # sum of F1 scores
@@ -85,7 +168,7 @@ def get_dl_score(model, x_title=None, x_body=None, mode="fusion"):
             )
         probs = torch.softmax(logits, dim=1)
         return probs[:,1].item()
-
+    
 def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, json_path, threshold=0.5):
     preds = []
     weights = normalize_weights(weights)
@@ -171,50 +254,59 @@ def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, we
         json_path=json_path
     )
 
-
-def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weights, model_name, TITLE_DIM, BODY_DIM, json_path):
+def evaluate_mixed_test_dataset(
+    x_test,
+    y_test,
+    availability_mask,
+    models,
+    weights,
+    model_name,
+    TITLE_DIM,
+    BODY_DIM,
+    json_path
+):
     preds = []
     weights = normalize_weights(weights)
+
     for i in range(len(x_test)):
         x = x_test[i].reshape(1, -1)
         has_title, has_body = availability_mask[i]
-        
+
         votes = []
         vote_weights = []
 
         embedding_dim = x.shape[1]
-        # FULL MODEL -> only if both title and body exist
-        if has_title and has_body and embedding_dim == TITLE_DIM+BODY_DIM:
+
+        # Dataset has both title and body
+        if has_title and has_body and embedding_dim == TITLE_DIM + BODY_DIM:
             score = get_score(models[model_name]["full"], x)
             votes.append(score)
             vote_weights.append(weights[model_name]["full"])
 
-        #TITLE MODEL -> if title exists
+        # Dataset has title
         if has_title:
-            if embedding_dim == TITLE_DIM:
-                x_title = x
-            elif embedding_dim == TITLE_DIM+BODY_DIM:
-                x_title = x[:, :TITLE_DIM]
-            else:
-                x_title = None
-                
+            x_title = (
+                x if embedding_dim == TITLE_DIM
+                else x[:, :TITLE_DIM] if embedding_dim == TITLE_DIM + BODY_DIM
+                else None
+            )
+
             if x_title is not None:
-                title_score = get_score(models[model_name]["title"], x_title)
-                votes.append(title_score)
+                score = get_score(models[model_name]["title"], x_title)
+                votes.append(score)
                 vote_weights.append(weights[model_name]["title"])
 
-        #BODY MODEL -> if body exist
+        # Dataset has body
         if has_body:
-            if embedding_dim == BODY_DIM:
-                x_body = x
-            elif embedding_dim == TITLE_DIM+BODY_DIM:
-                x_body = x[:, TITLE_DIM:]
-            else:
-                x_body = None
-                
+            x_body = (
+                x if embedding_dim == BODY_DIM
+                else x[:, TITLE_DIM:] if embedding_dim == TITLE_DIM + BODY_DIM
+                else None
+            )
+
             if x_body is not None:
-                body_score = get_score(models[model_name]["body"], x_body)
-                votes.append(body_score)
+                score = get_score(models[model_name]["body"], x_body)
+                votes.append(score)
                 vote_weights.append(weights[model_name]["body"])
 
         final_score = np.average(votes, weights=vote_weights)
@@ -222,29 +314,28 @@ def evaluate_mixed_test_dataset(x_test, y_test, availability_mask, models, weigh
         preds.append(final_pred)
 
     preds = np.array(preds)
-    test_acc = accuracy_score(y_test, preds)
-    test_f1 = f1_score(y_test, preds)
-    test_cm = confusion_matrix(y_test, preds)
-    test_cr = classification_report(y_test, preds,output_dict=True)
-    print(f"Accuracy for {model_name}: {test_acc}")
-    print(f"Confusion Matrix for {model_name}:\n{test_cm}")
-    print(f"Classification Report for {model_name}:\n{classification_report(y_test, preds)}")
 
-    experiment_results = {
-    "accuracy": test_acc,
-    "f1_score": test_f1,
-    "confusion_matrix": test_cm.tolist(),
-    "classification_report": test_cr
-    }
-    
+    test_acc = accuracy_score(y_test, preds)
+    test_f1  = f1_score(y_test, preds)
+    test_cm  = confusion_matrix(y_test, preds)
+    test_cr  = classification_report(y_test, preds, output_dict=True)
+
+    print(f"Accuracy for {model_name}: {test_acc}")
+    print(f"Confusion Matrix:\n{test_cm}")
+    print(classification_report(y_test, preds))
+
     store_results(
         model_name=model_name,
         experiment_type="ML_weighted_ensemble",
-        metrics_dict=experiment_results,
+        metrics_dict={
+            "accuracy": test_acc,
+            "f1_score": test_f1,
+            "confusion_matrix": test_cm.tolist(),
+            "classification_report": test_cr
+        },
         json_path=json_path
     )
 
-    
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
