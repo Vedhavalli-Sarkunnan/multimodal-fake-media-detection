@@ -26,12 +26,12 @@ def store_results(model_name, experiment_type, metrics_dict, json_path="results/
 
 def get_model_probs(model, X):
 
-    if hasattr(model, "predict_proba"):
-        return model.predict_proba(X)[:, 1]
+    if hasattr(model, "predict_proba"): #model predicts probabilities
+        return model.predict_proba(X)[:, 1] #P(class 1)
 
-    elif hasattr(model, "decision_function"):
+    elif hasattr(model, "decision_function"): #model predicts decision values, which if positive=>class 1 and vice versa; the higher the value, the more confident the model is
         scores = model.decision_function(X)
-        return 1 / (1 + np.exp(-scores))  # sigmoid
+        return 1 / (1 + np.exp(-scores))  # sigmoid to squash the decision values between 0 and 1
 
     else:
         raise ValueError("Model does not support probability output")
@@ -135,7 +135,7 @@ def normalize_weights(weights):
             weights[model][dataset_type]/= total
     return weights
 
-def get_score(model, x):
+def get_score(model, x): #predicts a single record
     if hasattr(model, "predict_proba"):
         return model.predict_proba(x)[0, 1]
     elif hasattr(model, "decision_function"):
@@ -149,7 +149,7 @@ import numpy as np
 def get_dl_score(model, x_title=None, x_body=None, mode="fusion"):
 
     model.eval()
-    device = next(model.parameters()).device
+    device = next(model.parameters()).device #moves input data to the same device as model
 
     with torch.no_grad():
         if mode == "fusion":
@@ -174,7 +174,7 @@ def evaluate_mixed_test_dataset_dl(x_test, y_test, availability_mask, models, we
     weights = normalize_weights(weights)
 
     for i in range(len(x_test)):
-        x = x_test[i].reshape(1, -1)
+        x = x_test[i].reshape(1, -1) # converting shape (N,) to ((1,N)) compatible for model
         has_title, has_body = availability_mask[i]
         embedding_dim = x.shape[1]
 
@@ -309,7 +309,7 @@ def evaluate_mixed_test_dataset(
                 votes.append(score)
                 vote_weights.append(weights[model_name]["body"])
 
-        final_score = np.average(votes, weights=vote_weights)
+        final_score = np.average(votes, weights=vote_weights) #weighted average
         final_pred = int(final_score >= 0.5)
         preds.append(final_pred)
 

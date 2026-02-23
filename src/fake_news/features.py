@@ -38,7 +38,7 @@ from torch.optim import AdamW
 from sklearn.metrics import f1_score
 
 def mean_pooling(last_hidden_state, attention_mask):
-    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float() #(batch_size, seq_len) => (batch_size, seq_len, 1) => (batch_size, seq_len, 768)
     return (last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
 
 class FakeNewsDataset(Dataset):
@@ -120,7 +120,7 @@ def fine_tune_roberta(
         if "encoder.layer." in name:
             layer_num = int(name.split(".")[2])
             if layer_num < 8:
-                param.requires_grad = False
+                param.requires_grad = False #freezing 8 out of 12 layers in RoBERTa
                 
     optimizer = AdamW([
         {"params": model.roberta.parameters(), "lr": 1e-5},
@@ -140,7 +140,7 @@ def fine_tune_roberta(
             logits, _ = model(input_ids, attention_mask)
             loss = criterion(logits, labels)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) #prevents exploding gradients
             optimizer.step()
 
         model.eval()

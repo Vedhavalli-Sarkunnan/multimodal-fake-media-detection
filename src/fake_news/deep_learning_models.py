@@ -19,13 +19,13 @@ class GatedFusionClassifier(nn.Module):
         self.body_encoder = nn.Sequential(
             nn.Linear(body_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.3)
+            nn.Dropout(0.3) #Randomly turns off 30% of the neurons to give regularization
         )
         
         if mode == "fusion":
             self.gate = nn.Sequential(
                 nn.Linear(2 * hidden_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
+                nn.BatchNorm1d(hidden_dim),  #standardization function to stabilize training
                 nn.ReLU(),
                 nn.Dropout(0.3),
                 nn.Linear(hidden_dim, 1),
@@ -46,29 +46,29 @@ class GatedFusionClassifier(nn.Module):
             h_title = self.title_encoder(title_emb)
             h_body = self.body_encoder(body_emb)
 
-            gate_input = torch.cat([h_title, h_body], dim=1)
+            gate_input = torch.cat([h_title, h_body], dim=1) #dim=1 implies horizontal concatenation
             alpha = self.gate(gate_input)
 
-            h = alpha * h_title + h_body
+            h = alpha * h_title + h_body #residual fusion
 
         logits = self.classifier(h)
         return logits
 
-class WeightedFocalLoss(nn.Module):
-    def __init__(self, class_weights=None, gamma=2):
-        super().__init__()
-        self.gamma = gamma
-        self.class_weights = class_weights
-        self.ce = nn.CrossEntropyLoss(
-            weight=class_weights,
-            reduction="none"
-        )
+    class WeightedFocalLoss(nn.Module): #WeightedFocalLoss=((1−pt​)^γ)*(−log(pt​)) where t=majority class, γ=gamma
+        def __init__(self, class_weights=None, gamma=2):
+            super().__init__()
+            self.gamma = gamma
+            self.class_weights = class_weights
+            self.ce = nn.CrossEntropyLoss(
+                weight=class_weights,
+                reduction="none"
+            )
 
-    def forward(self, logits, targets):
-        ce_loss = self.ce(logits, targets)     # per-sample loss
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        return focal_loss.mean()
+        def forward(self, logits, targets):
+            ce_loss = self.ce(logits, targets)     # per-sample loss
+            pt = torch.exp(-ce_loss) 
+            focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+            return focal_loss.mean()
 
 
 from copy import deepcopy
@@ -88,7 +88,7 @@ def train_gated_fusion_model(
     batch_size=64,
     lr=1e-3
 ):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
     print(f"Using {device}")
 
     y_train_t = torch.tensor(y_train, dtype=torch.long)
@@ -129,7 +129,7 @@ def train_gated_fusion_model(
         mode=mode
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr) #adaptive gradient descent.
     
     class_weights = compute_class_weight(
         class_weight="balanced",
@@ -147,7 +147,7 @@ def train_gated_fusion_model(
     for epoch in range(epochs):
         model.train()
         for batch in train_loader:
-            optimizer.zero_grad()
+            optimizer.zero_grad() #resetting gradients 
 
             if mode == "fusion":
                 x_title, x_body, y = batch
@@ -182,7 +182,6 @@ def train_gated_fusion_model(
                     x_body, y = batch
                     logits = model(body_emb=x_body.to(device))
     
-                probs = torch.softmax(logits, dim=1)[:, 1]   # P(fake)
                 preds = torch.argmax(logits, dim=1).cpu().numpy()
 
                 all_preds.extend(preds)

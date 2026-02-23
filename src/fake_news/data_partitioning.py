@@ -10,7 +10,7 @@ def split_data_indices(y, test_size=0.15, val_size=0.15, random_state=16):
         indices,
         y,
         test_size=test_size,
-        stratify=y,
+        stratify=y, #preserves class proportions in each split
         random_state=random_state
     )
 
@@ -150,20 +150,20 @@ def weighted_early_fusion_split(
     TITLE_WEIGHT=1.0,
     BODY_WEIGHT=1.15
 ):
-    title_scaler = StandardScaler()
+    title_scaler = StandardScaler() #performs standardization (mean=0 and SD=1) to make sure all the features are in the same scale
     body_scaler  = StandardScaler()
 
-    x_wf_title_train_scaled = title_scaler.fit_transform(x_wf_title_train)
+    x_wf_title_train_scaled = title_scaler.fit_transform(x_wf_title_train) #fit => learns the statistical nature of the training data, transform => scales the features accordingly
     x_wf_body_train_scaled  = body_scaler.fit_transform(x_wf_body_train)
 
-    x_wf_title_val_scaled   = title_scaler.transform(x_wf_title_val)
+    x_wf_title_val_scaled   = title_scaler.transform(x_wf_title_val) #no fit to avoid data leakage
     x_wf_body_val_scaled    = body_scaler.transform(x_wf_body_val)
 
     x_wf_title_test_scaled  = title_scaler.transform(x_wf_title_test)
     x_wf_body_test_scaled   = body_scaler.transform(x_wf_body_test)
 
     x_wf_train = np.concatenate(
-        [TITLE_WEIGHT * x_wf_title_train_scaled,
+        [TITLE_WEIGHT * x_wf_title_train_scaled, #weighted fusion of features
          BODY_WEIGHT  * x_wf_body_train_scaled],
         axis=1
     )
